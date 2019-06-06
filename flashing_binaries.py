@@ -4,12 +4,16 @@ import sys
 import time
 import tarfile
 import glob
+import multiprocessing as mp
 from ChromeTestLib import ChromeTestLib
 
 import subprocess
 import shlex
 from collections import defaultdict
 from scapy.all import srp, Ether, ARP, conf
+
+
+p = mp.Pool(mp.cpu_count())
 
 
 cwd = os.getcwd()
@@ -62,26 +66,31 @@ def find_and_return_latest_binaries(binaries_folder_location):
     else:
         return d
 
-def FlashBinaries(dut_ip, cbImageSrc = "", ecImageSrc = "", cbFlash = True, ecFlash = False):
+def FlashBinaries(dut_ip, cbImageSrc = "", ecImageSrc = ""):
     flashDict = dict()
     flashing_status = "FAIL"
-    if cbFlash:
+    cbFlashStatus = False
+    ecFlashStatus = False
+    if cbImageSrc:
         cbImageDest = "/tmp/autoflashCB.bin"
         copy_cb = test.copy_file_from_host_to_dut(cbImageSrc, cbImageDest, dut_ip)
         cbCmd = "flashrom -p host -w " + cbImageDest
-    if ecFlash:
+        cbCmd = "ls -l " + cbImageDest
+        cbFlashStatus = test.run_command_to_check_non_zero_exit_status(cbCmd, dut_ip)
+
+    if ecImageSrc:
         ecImageDest = "/tmp/autoflashEC.bin"
         copy_ec = test.copy_file_from_host_to_dut(ecImageSrc, ecImageDest, dut_ip)
         ecCmd = "flashrom -p ec -w " + ecImageDest
-  
-    cbFlashStatus = test.run_command_to_check_non_zero_exit_status(cbCmd, dut_ip)
-    if ecFlash:
+        ecCmd = "ls -l " + ecImageDest
         ecFlashStatus = test.run_command_to_check_non_zero_exit_status(ecCmd, dut_ip)
         if not ecFlashStatus:
-            return (dut_ip, flashing_status)
+            flashDict[dut_ip] = flashing_status
+            resultDict.update(flashDict)
+            return flashDict
     
-    if cbFlashStatus:
-        test.run_async_command("sleep 2; reboot > /dev/null 2>&1", dut_ip)
+    if cbFlashStatus or ecFlashStatus:
+        # test.run_async_command("sleep 2; reboot > /dev/null 2>&1", dut_ip)
         print("")
         print("Keep checking for 60 secs for DUT to come back on!")
         print("")
@@ -90,12 +99,16 @@ def FlashBinaries(dut_ip, cbImageSrc = "", ecImageSrc = "", cbFlash = True, ecFl
             if test.check_if_remote_system_is_live(dut_ip):
                 time.sleep(3)
                 flashing_status = "PASS"
-                return (dut_ip, flashing_status)
+                flashDict[dut_ip] = flashing_status
+                return flashDict
             time.sleep(1)
-        return (dut_ip, flashing_status)
-    else:
-        print ("cb flashing failed in :", dut_ip)
-        return (dut_ip, flashing_status)   
+        flashDict[dut_ip] = flashing_status
+        resultDict.update(flashDict)
+        return flashDict
+    
+    flashDict[dut_ip] = flashing_status
+    resultDict.update(flashDict)
+    return flashDict   
 
 
 if __name__ == "__main__":
@@ -108,12 +121,14 @@ if __name__ == "__main__":
     
     bin_location = cwd + "/latest"
     binaryDict = find_and_return_latest_binaries(bin_location)
-    if "ec" in binaryDict:
-        flashECFlag = True
-    if "cb" in binaryDict:
-        flashCBFlag = True
-
-    print (flashCBFlag, flashECFlag)
+    if binaryDict:
+        if not "ec" in binaryDict:
+            binaryDict["ec"] = ""
+        if not "cb" in binaryDict:
+            binaryDict["cb"] = ""
+    else:
+        print ("Binaries are not available. Copy binaries into folder named latest and rerun flashing script!")
+        sys.exit(1)
 
     #START IP list given from the cmd line
     parser = argparse.ArgumentParser()
@@ -128,12 +143,12 @@ if __name__ == "__main__":
         sys.exit(1)
     print (ip_list)
     # END IP list given from the cmd line
-    print (ip_list)
-    
+    resultDict = dict()    
     for i in ip_list:
-        flashing_status = False
         if test.check_if_remote_system_is_live(i):
-           print (FlashBinaries(i, cbImageSrc = binaryDict["cb"], ecImageSrc = binaryDict["ec"], cbFlash = flashCBFlag, ecFlash = flashECFlag))
-            
-                   
+            # p.apply_async(FlashBinaries(i, resultDict, cbImageSrc = binaryDict["cb"], ecImageSrc = binaryDict["ec"]), ip_list, 1)
+            currentResult = FlashBinaries(i, cbImageSrc = binaryDict["cb"], ecImageSrc = binaryDict["ec"])
+            resultDict.update(currentResult)
+    print ("*************************************************************")
+    print (resultDict)               
 
